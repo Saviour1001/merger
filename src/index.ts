@@ -9,6 +9,7 @@ interface Options {
   excludeDirs?: string[];
   excludeFiles?: string[];
   outputPath?: string;
+  includeExtensions?: string[]; // Changed to array of extensions
 }
 
 interface FileTree {
@@ -18,10 +19,6 @@ interface FileTree {
 }
 
 function getRepoNameFromUrl(url: string): string {
-  // Extract repo name from GitHub URL
-  // Handles both HTTPS and SSH formats:
-  // https://github.com/username/repo.git
-  // git@github.com:username/repo.git
   const match = url.match(/\/([^\/]+?)(\.git)?$/);
   return match ? match[1] : "repository";
 }
@@ -51,7 +48,8 @@ function generateTreeString(
 async function buildFileTree(
   directory: string,
   excludeDirs: string[],
-  repoName: string
+  repoName: string,
+  includeExtensions?: string[]
 ): Promise<FileTree> {
   const structure: FileTree = {
     name: repoName,
@@ -61,7 +59,6 @@ async function buildFileTree(
 
   const items = fs.readdirSync(directory);
   const sortedItems = items.sort((a, b) => {
-    // Directories come first, then files
     const aIsDir = fs.statSync(path.join(directory, a)).isDirectory();
     const bIsDir = fs.statSync(path.join(directory, b)).isDirectory();
     if (aIsDir && !bIsDir) return -1;
@@ -75,14 +72,29 @@ async function buildFileTree(
 
     if (stat.isDirectory()) {
       if (!excludeDirs.includes(item)) {
-        const childTree = await buildFileTree(fullPath, excludeDirs, item);
-        structure.children!.push(childTree);
+        const childTree = await buildFileTree(
+          fullPath,
+          excludeDirs,
+          item,
+          includeExtensions
+        );
+        // Only add directories that have children (after filtering)
+        if (childTree.children && childTree.children.length > 0) {
+          structure.children!.push(childTree);
+        }
       }
     } else {
-      structure.children!.push({
-        name: item,
-        type: "file",
-      });
+      const ext = path.extname(item).toLowerCase();
+      // Include file if no extension filter or if extension is in the include list
+      if (
+        !includeExtensions ||
+        includeExtensions.map((e) => e.toLowerCase()).includes(ext)
+      ) {
+        structure.children!.push({
+          name: item,
+          type: "file",
+        });
+      }
     }
   }
 
@@ -97,25 +109,26 @@ async function mergeRepositoryFiles(
     excludeDirs = ["node_modules", ".git", "dist", "build"],
     excludeFiles = [".env", ".gitignore", "package-lock.json"],
     outputPath = "merged-output.txt",
+    includeExtensions,
   } = options;
 
   const tempDir = `temp-${Date.now()}`;
   const repoName = getRepoNameFromUrl(githubUrl);
 
   try {
-    // Clone the repository
     console.log(`Cloning repository from ${githubUrl}...`);
     await execAsync(`git clone ${githubUrl} ${tempDir}`);
 
-    // Generate repository structure
-    const fileTree = await buildFileTree(tempDir, excludeDirs, repoName);
+    const fileTree = await buildFileTree(
+      tempDir,
+      excludeDirs,
+      repoName,
+      includeExtensions
+    );
     const treeString =
       repoName +
       "/\n" +
-      generateTreeString(fileTree, "", true)
-        .split("\n")
-        .slice(2) // Remove the first line since we're adding the repo name manually
-        .join("\n");
+      generateTreeString(fileTree, "", true).split("\n").slice(2).join("\n");
 
     let mergedContent = `// Source: ${githubUrl}\n`;
     mergedContent += `// Merged on: ${new Date().toISOString()}\n\n`;
@@ -123,7 +136,6 @@ async function mergeRepositoryFiles(
     mergedContent += treeString;
     mergedContent += "*/\n\n";
 
-    // Rest of the file merging logic
     async function processDirectory(directory: string): Promise<void> {
       const items = fs.readdirSync(directory);
 
@@ -136,8 +148,12 @@ async function mergeRepositoryFiles(
             await processDirectory(fullPath);
           }
         } else {
-          const ext = path.extname(item);
-          if (!excludeFiles.includes(item) && isTextFile(ext)) {
+          const ext = path.extname(item).toLowerCase();
+          if (
+            !excludeFiles.includes(item) &&
+            (!includeExtensions ||
+              includeExtensions.map((e) => e.toLowerCase()).includes(ext))
+          ) {
             const content = fs.readFileSync(fullPath, "utf8");
             mergedContent += `\n// File: ${fullPath.replace(
               tempDir + "/",
@@ -156,52 +172,23 @@ async function mergeRepositoryFiles(
     console.error("Error:", error);
     throw error;
   } finally {
-    // Cleanup: Remove temporary directory
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }
 }
 
-function isTextFile(extension: string): boolean {
-  const textExtensions = [
-    ".ts",
-    ".js",
-    ".jsx",
-    ".tsx",
-    ".html",
-    ".css",
-    ".scss",
-    ".less",
-    ".json",
-    ".md",
-    ".txt",
-    ".yml",
-    ".yaml",
-    ".xml",
-    ".csv",
-    ".py",
-    ".java",
-    ".rb",
-    ".php",
-    ".c",
-    ".cpp",
-    ".h",
-    ".hpp",
-    ".sh",
-    ".rs",
-  ];
-  return textExtensions.includes(extension.toLowerCase());
-}
-
 // Example usage
-const url = "https://github.com/Open-Sorcerer/Lunar";
+const url = "YOUR_URL";
 if (!url) {
   console.error("Please provide a GitHub URL as an argument");
   process.exit(1);
 }
 
-mergeRepositoryFiles(url).catch((error) => {
+// Example: Include both .rs and .ts files
+mergeRepositoryFiles(url, {
+  includeExtensions: [".md"], // This will include both Rust and TypeScript files
+}).catch((error) => {
   console.error("Failed to merge repository files:", error);
   process.exit(1);
 });
